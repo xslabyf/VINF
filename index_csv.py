@@ -19,19 +19,16 @@ from org.apache.lucene.document import (
 from org.apache.lucene.index import IndexWriter, IndexWriterConfig
 from java.util import HashMap
 
-# --------- CONFIGURE HERE ---------
 CSV_FILE = "combined_clean.csv"
 INDEX_DIR = "index"
-# ----------------------------------
 
 
-# Full-text fields with fallback
 FULLTEXT_FIELDS_WITH_FALLBACK = {
     "birth_place_wiki": "birth_place",
     "nationality_wiki": "nationality",
 }
 
-# Full-text fields without fallback
+
 FULLTEXT_FIELDS = [
     "driver_name",
     "teams_wiki",
@@ -41,12 +38,12 @@ FULLTEXT_FIELDS = [
     "birth_date",
 ]
 
-# Exact non-tokenized fields
+
 STRING_FIELDS = [
     "driver_id",
 ]
 
-# Numeric fields with fallback (wiki -> base field)
+
 NUMERIC_FIELDS_WITH_FALLBACK = {
     "wins": "wins_wiki",
     "podiums": "podiums_wiki",
@@ -57,19 +54,13 @@ NUMERIC_FIELDS_WITH_FALLBACK = {
 
 
 def get_text_value(row, base_field, wiki_field):
-    """
-    Get text value with fallback:
-    1. Try wiki_field
-    2. If empty, try base_field
-    3. If both empty, return None
-    """
-    # Try wiki version first
+
     if wiki_field:
         value = row.get(wiki_field, "").strip()
         if value:
             return value
 
-    # Fallback to base field
+
     value = row.get(base_field, "").strip()
     if value:
         return value
@@ -78,13 +69,7 @@ def get_text_value(row, base_field, wiki_field):
 
 
 def get_numeric_value(row, base_field, wiki_field):
-    """
-    Get numeric value with fallback:
-    1. Try wiki_field
-    2. If empty, try base_field
-    3. If both empty, return 0
-    """
-    # Try wiki version first
+
     if wiki_field:
         value = row.get(wiki_field, "").strip()
         if value:
@@ -93,7 +78,6 @@ def get_numeric_value(row, base_field, wiki_field):
             except (ValueError, TypeError):
                 pass
 
-    # Fallback to base field
     value = row.get(base_field, "").strip()
     if value:
         try:
@@ -105,13 +89,11 @@ def get_numeric_value(row, base_field, wiki_field):
 
 
 def create_index():
-    # Standard analyzer pre textove polia
+
     standard_analyzer = StandardAnalyzer()
 
-    # Whitespace analyzer pre datumove polia (rozdeluje len podla medzier a pomlciek)
     whitespace_analyzer = WhitespaceAnalyzer()
 
-    # PerFieldAnalyzerWrapper - rozne analyzery pre rozne polia
     analyzer_map = HashMap()
     analyzer_map.put("birth_date_wiki", whitespace_analyzer)
     analyzer_map.put("birth_date", whitespace_analyzer)
@@ -128,32 +110,26 @@ def create_index():
         for row in reader:
             doc = Document()
 
-            # --- FULLTEXT fields with fallback ---
             for wiki_field, base_field in FULLTEXT_FIELDS_WITH_FALLBACK.items():
                 value = get_text_value(row, base_field, wiki_field)
                 if value:
-                    # Index pod wiki nazvom s fallbackom
                     doc.add(TextField(wiki_field, value, Field.Store.YES))
 
-            # --- FULLTEXT fields without fallback ---
             for field in FULLTEXT_FIELDS:
                 value = row.get(field)
                 if value and value.strip():
                     doc.add(TextField(field, value, Field.Store.YES))
 
-            # --- Exact non-tokenized fields ---
             for field in STRING_FIELDS:
                 value = row.get(field)
                 if value and value.strip():
                     doc.add(StringField(field, value, Field.Store.YES))
 
-            # --- Numeric fields with fallback ---
             for base_field, wiki_field in NUMERIC_FIELDS_WITH_FALLBACK.items():
                 num = get_numeric_value(row, base_field, wiki_field)
                 doc.add(IntPoint(base_field, num))
                 doc.add(StoredField(base_field, num))
 
-            # --- Store all other fields but don't index ---
             indexed_fields = (
                     list(FULLTEXT_FIELDS_WITH_FALLBACK.keys()) +
                     list(FULLTEXT_FIELDS_WITH_FALLBACK.values()) +

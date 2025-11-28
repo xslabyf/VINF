@@ -23,20 +23,16 @@ class F1SearchCLI:
         self.reader = DirectoryReader.open(index_dir)
         self.searcher = IndexSearcher(self.reader)
 
-        # Standard analyzer pre textove polia
         standard_analyzer = StandardAnalyzer()
 
-        # Whitespace analyzer pre datumove polia
         whitespace_analyzer = WhitespaceAnalyzer()
 
-        # PerFieldAnalyzerWrapper
         analyzer_map = HashMap()
         analyzer_map.put("birth_date_wiki", whitespace_analyzer)
         analyzer_map.put("birth_date", whitespace_analyzer)
 
         self.analyzer = PerFieldAnalyzerWrapper(standard_analyzer, analyzer_map)
 
-        # Text fields (actual indexed names)
         self.text_fields = [
             "driver_name",
             "nationality_wiki",
@@ -48,13 +44,11 @@ class F1SearchCLI:
             "birth_date",
         ]
 
-        # Field weights for boosting
         self.field_weights = {
             "driver_name": 3.0,
             "teams_wiki": 2.0,
         }
 
-        # Aliases: short names -> real field names
         self.field_aliases = {
             "name": "driver_name",
             "nationality": "nationality_wiki",
@@ -65,14 +59,9 @@ class F1SearchCLI:
             "birth_date": "birth_date_wiki",
         }
 
-        # Numeric fields
         self.numeric_fields = ["wins", "podiums", "starts", "poles", "fastest_laps"]
 
     def resolve_field_alias(self, query_string):
-        """
-        Rewrites aliases to real field names
-        Example: teams:Ferrari -> teams_wiki:Ferrari
-        """
         for alias, real_field in self.field_aliases.items():
             # Look for pattern: alias:value
             pattern = rf'\b{alias}:'
@@ -82,9 +71,6 @@ class F1SearchCLI:
         return query_string
 
     def parse_numeric_query(self, query_string):
-        """
-        Parse numeric query: wins:[10 TO 100], wins:[10-100], wins:[50-*]
-        """
         # Pattern 1: wins:[10 TO 100]
         match = re.match(r'(\w+):\[(\d+)\s+TO\s+(\d+|\*)\]', query_string, re.IGNORECASE)
         if match:
@@ -116,14 +102,9 @@ class F1SearchCLI:
         return None
 
     def search(self, query_string, max_results=20, sort_by=None):
-        """
-        Full-text search with alias support and numeric ranges
-        """
         try:
-            # Rewrite aliases to real field names
             query_string = self.resolve_field_alias(query_string)
 
-            # Check if numeric query
             numeric_result = self.parse_numeric_query(query_string)
 
             if numeric_result:
@@ -137,13 +118,11 @@ class F1SearchCLI:
                 query = IntPoint.newRangeQuery(field, min_val, max_val)
 
             elif ":" in query_string:
-                # Text query with specific field
                 parser = QueryParser("driver_name", self.analyzer)
                 parser.setAllowLeadingWildcard(True)
                 query = parser.parse(query_string)
 
             else:
-                # Multi-field search with boosting
                 builder = BooleanQuery.Builder()
 
                 for field in self.text_fields:
@@ -152,7 +131,6 @@ class F1SearchCLI:
                     try:
                         field_query = parser.parse(query_string)
 
-                        # Apply boost weight
                         weight = self.field_weights.get(field, 1.0)
                         boosted_query = BoostQuery(field_query, weight)
 
@@ -162,7 +140,6 @@ class F1SearchCLI:
 
                 query = builder.build()
 
-            # Sort
             if sort_by:
                 sort = Sort(SortField(sort_by, SortField.Type.INT, True))
                 hits = self.searcher.search(query, max_results, sort)
@@ -280,7 +257,6 @@ def main():
                 searcher.show_help()
                 continue
 
-            # Sort
             sort_by = None
             if query_input.startswith("sort:"):
                 parts = query_input.split(" ", 1)
