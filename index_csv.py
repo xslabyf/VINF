@@ -19,7 +19,7 @@ from org.apache.lucene.document import (
 from org.apache.lucene.index import IndexWriter, IndexWriterConfig
 from java.util import HashMap
 
-CSV_FILE = "combined_clean.csv"
+CSV_FILE = "finalny_merged.csv"
 INDEX_DIR = "index"
 
 

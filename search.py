@@ -71,7 +71,6 @@ class F1SearchCLI:
         return query_string
 
     def parse_numeric_query(self, query_string):
-        # Pattern 1: wins:[10 TO 100]
         match = re.match(r'(\w+):\[(\d+)\s+TO\s+(\d+|\*)\]', query_string, re.IGNORECASE)
         if match:
             field, min_val, max_val = match.groups()
@@ -79,7 +78,6 @@ class F1SearchCLI:
             max_val = 999999 if max_val == '*' else int(max_val)
             return field, min_val, max_val
 
-        # Pattern 2: wins:[10-100]
         match = re.match(r'(\w+):\[(\d+)-(\d+|\*)\]', query_string)
         if match:
             field, min_val, max_val = match.groups()
@@ -87,13 +85,11 @@ class F1SearchCLI:
             max_val = 999999 if max_val == '*' else int(max_val)
             return field, min_val, max_val
 
-        # Pattern 3: wins:[50 TO *]
         match = re.match(r'(\w+):\[(\d+)\s+TO\s+\*\]', query_string, re.IGNORECASE)
         if match:
             field, min_val = match.groups()
             return field, int(min_val), 999999
 
-        # Pattern 4: wins:[50-*]
         match = re.match(r'(\w+):\[(\d+)-\*\]', query_string)
         if match:
             field, min_val = match.groups()
@@ -171,7 +167,6 @@ class F1SearchCLI:
             traceback.print_exc()
 
     def show_result(self, doc, score, rank):
-        """Display result"""
         print(f"\n{rank}.  Score: {score:.4f}")
         print(f"   Name: {doc.get('driver_name')}")
         print(f"   Birth: {doc.get('birth_date_wiki') or doc.get('birth_date') or 'unknown'}")

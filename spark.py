@@ -1,122 +1,195 @@
 import re
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lower, regexp_extract, regexp_replace, trim
+from pyspark.sql.functions import col, lower, regexp_replace
 import pandas as pd
 
 spark = SparkSession.builder.appName("WikiXMLprocessing").getOrCreate()
 
-# ---------- 1. LOAD XML ----------
-wiki_xml = "enwiki-latest-pages-articles10.xml-p4045403p5399366/enwiki-latest-pages-articles10.xml-p4045403p5399366"
+wiki_xml = "D:/enwiki-latest-pages-articles.xml"
 wiki_df = spark.read.format("xml").option("rowTag", "page").load(wiki_xml) \
     .select(col("title"), col("revision.text._VALUE").alias("text"))
 
-wiki_df = wiki_df.withColumn("title_norm", lower(regexp_replace(col("title"), r"\s+\(.*\)$", "")))
+wiki_df = wiki_df.withColumn(
+    "title_norm",
+    lower(regexp_replace(col("title"), r"\s+\(.*\)$", ""))
+)
 
-# ---------- 3. LOAD drivers ----------
 drivers_df = spark.read.csv("drivers.csv", header=True, inferSchema=True) \
-    .withColumn("driver_name_norm", lower(regexp_replace(col("driver_name"), r"\s+\(.*\)$", "")))
+    .withColumn(
+        "driver_name_norm",
+        lower(regexp_replace(col("driver_name"), r"\s+\(.*\)$", ""))
+    )
 
-# ---------- 4. JOIN ----------
-joined_raw = drivers_df.join(wiki_df,
-                             drivers_df.driver_name_norm == wiki_df.title_norm,
-                             "inner")
+joined_raw = drivers_df.join(
+    wiki_df,
+    drivers_df.driver_name_norm == wiki_df.title_norm,
+    "inner"
+)
 
-# ---------- 5. FILTER ----------
 joined_filtered = joined_raw.filter(
     col("text").isNotNull() &
     lower(col("text")).rlike("(racing driver|race car|formula one|nascar|indycar|motogp|wrc|karting)")
 )
 
-# ---------- 6. EXTRAKCIA INFOBOXU ----------
-joined_infobox = joined_filtered.withColumn(
-    "infobox_body",
-    regexp_extract(col("text"), r"((?s)\{\{Infobox[^}]*\n((?:[^{}]|\{\{.*?\}\})*)\n\}\}", 0)
+pdf = joined_filtered.toPandas()
+
+def extract_infobox(text):
+    if not isinstance(text, str):
+        return ""
+
+    m = re.search(r"\{\{Infobox", text, re.IGNORECASE)
+    if not m:
+        return ""
+
+    start = m.start()
+
+    sec = re.search(r"\n={2,}.*?={2,}", text[start:])
+    end_limit = start + sec.start() if sec else len(text)
+
+    depth = 0
+    i = start
+    while i < end_limit:
+        if text[i:i+2] == "{{":
+            depth += 1
+            i += 2
+        elif text[i:i+2] == "}}":
+            depth -= 1
+            i += 2
+            if depth == 0:
+                return text[start:i]
+        else:
+            i += 1
+
+    return text[start:end_limit]
+
+
+print("⏳ Extracting infoboxes including nested templates…")
+pdf["infobox_full"] = pdf["text"].apply(extract_infobox)
+
+def extract_all_fields(infobox_text):
+    if not isinstance(infobox_text, str):
+        return {}
+
+    fields = {}
+
+    pattern = r"^\s*\|\s*([A-Za-z0-9_() ]+?)\s*=\s*(.*?)\s*$"
+
+    for line in infobox_text.split("\n"):
+        m = re.match(pattern, line.strip())
+        if not m:
+            continue
+        key, value = m.groups()
+        value = value.strip()
+        if value == "":
+            continue
+
+        key_norm = key.strip().lower()
+        fields[key_norm] = value
+
+    return fields
+
+
+pdf["fields"] = pdf["infobox_full"].apply(extract_all_fields)
+
+def get_field(d, names):
+    for n in names:
+        n_norm = n.lower()
+        if n_norm in d:
+            return d[n_norm]
+    return ""
+
+pdf["teams_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["teams", "team", "current_team", "team(s)"])
 )
 
-# ---------- 7. EXTRAKCIA POLÍ ----------
-def extract(field):
-    return f"(?mi)^\\|\\s*{field}\\s*=\\s*([^\\n]+)"
-
-fields = {
-    # FULL-LINE EXTRACT (DOBRE)
-    "birth_date_wiki": r"(?mi)^\|\s*(?:birth_date|born)\s*=\s*(?!\s*$)(.+)",
-    "teams_wiki": r"(?mi)^\|\s*(?:team|teams|current_team|teams(s))\s*=\s*(?!\s*$)(?!.*Championships)(.*?)\s*(?=\n\|)",
-    "championships_wiki": r"(?mi)^\|\s*(?:championships)\s*=\s*(?!\s*$)(.*?)\s*(?=\n\|)",
-    "car_number_wiki": r"(?mi)^\|\s*(?:car_number|car number)\s*=\s*(?!\s*$)(.*?)\s*(?=\n\|)",
-    "entries_wiki": r"(?mi)^\|\s*(?:entries|starts|races)\s*=\s*(?!\s*$)(.*?)\s*(?=\n\|)",
-    "wins_wiki": r"(?mi)^\|\s*wins\s*=\s*(?!\s*$)(.*?)\s*(?=\n\|)",
-    "podiums_wiki": r"(?mi)^\|\s*(?:podiums|podium finishes)\s*=\s*(?!\s*$)(.*?)\s*(?=\n\|)",
-    "fastest_laps_wiki": r"(?mi)^\|\s*(?:fastest_laps|fastest laps)\s*=\s*(?!\s*$)(.*?)\s*(?=\n\|)",
-    "pol_positions_wiki": r"(?mi)^\|\s*(?:pole positions|poles)\s*=\s*(?!\s*$)(.*?)\s*(?=\n\|)",
+pdf["birth_place_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["birth_place"])
+)
+pdf["nationality_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["nationality"])
+)
+pdf["birth_date_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["birth_date", "born"])
+)
 
 
-    # Ostatné nechávame tak
-    "birth_place_wiki": extract("birth_place"),
-    "nationality_wiki": extract("nationality"),
-    "former_teams_wiki": extract("(former_teams|former team)")
-}
+pdf["championships_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["championships"])
+)
+pdf["wins_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["wins", "win"])
+)
+pdf["entries_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["entries", "races", "starts"])
+)
+pdf["podiums_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["podiums", "podium finishes"])
+)
+pdf["car_number_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["car_number", "car number"])
+)
+pdf["fastest_laps_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["fastest_laps", "fastest laps"])
+)
+pdf["pol_positions_wiki"] = pdf["fields"].apply(
+    lambda d: get_field(d, ["pole positions", "poles"])
+)
 
-for colname, pattern in fields.items():
-    joined_infobox = joined_infobox.withColumn(colname, regexp_extract(col("infobox_body"), pattern, 1))
-
-# ---------- 8. Spark → Pandas ----------
-pdf = joined_infobox.toPandas()
-
-# ---------- 9. ČISTENIE birth_place + nationality ----------
 def clean_value(v):
-    if pd.isna(v):
+    if not isinstance(v, str):
         return ""
-    v = str(v)
     v = re.sub(r"\[\[([^|\]]+)\|([^\]]+)\]\]", r"\2", v)
     v = re.sub(r"\[\[([^\]]+)\]\]", r"\1", v)
     v = re.sub(r"\{\{[^{}]+\}\}", "", v)
     v = re.sub(r"<.*?>", "", v)
-    v = v.replace("|", " ")
-    v = " ".join(v.split())
+    v = " ".join(v.replace("|", " ").split())
     return v
 
-for c in ["birth_place_wiki", "nationality_wiki"]:
+for c in [
+    "teams_wiki",
+    "birth_place_wiki",
+    "nationality_wiki",
+    "wins_wiki",
+    "entries_wiki",
+    "podiums_wiki",
+    "championships_wiki",
+    "car_number_wiki",
+    "fastest_laps_wiki",
+    "pol_positions_wiki",
+]:
     pdf[c] = pdf[c].apply(clean_value)
 
-# ---------- 9B. ČISTENIE teams ----------
-def clean_teams(v):
-    if pd.isna(v):
-        return ""
-    v = str(v)
-    v = re.sub(r"\[\[([^|\]]+)\|([^\]]+)\]\]", r"\2", v)
-    v = re.sub(r"\[\[([^\]]+)\]\]", r"\1", v)
-    v = v.replace("<br>", ", ").replace("<br/>", ", ").replace("<br />", ", ")
-    v = " ".join(v.split())
-    return v
-
-pdf["teams_wiki"] = pdf["teams_wiki"].apply(clean_teams)
-
-# ---------- 9C. BIRTH_DATE ----------
 def clean_birth_date(v):
-    if pd.isna(v):
+    if not isinstance(v, str):
         return ""
-    v = str(v)
     m = re.search(r"(\d{4}).?(\d{1,2}).?(\d{1,2})", v)
     if m:
         y, mth, d = m.groups()
         return f"{y}-{mth}-{d}"
-    return re.sub(r"[\{\}\|]", " ", v)
+    return clean_value(v)
 
 pdf["birth_date_wiki"] = pdf["birth_date_wiki"].apply(clean_birth_date)
 
-# ---------- 10. NUMERIC extraction ----------
-num_cols = ["championships_wiki", "wins_wiki", "entries_wiki", "podiums_wiki", "car_number_wiki"]
+num_cols = [
+    "championships_wiki",
+    "wins_wiki",
+    "entries_wiki",
+    "podiums_wiki",
+    "car_number_wiki",
+    "fastest_laps_wiki",
+    "pol_positions_wiki",
+]
 
 for c in num_cols:
-    pdf[c] = pdf[c].astype(str).str.extract(r"(\d+)")
+    pdf[c] = pdf[c].astype(str).str.extract(r"(\d+)", expand=False)
 
-# ---------- 11. DROP ----------
+
 clean = pdf.drop(
-    columns=["infobox", "infobox_body", "text", "driver_name_norm", "title_norm"],
-    errors="ignore"
+    columns=["infobox_full", "fields", "text", "driver_name_norm", "title_norm"],
+    errors="ignore",
 )
 
-clean.to_csv("pls.csv", index=False)
+clean.to_csv("finalny.csv", index=False)
+print("DONE — uložené pls.csv")
 
-print("DONE — uložené ako combined_clean.csv")
 spark.stop()
