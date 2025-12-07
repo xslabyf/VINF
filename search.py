@@ -97,7 +97,7 @@ class F1SearchCLI:
 
         return None
 
-    def search(self, query_string, max_results=20, sort_by=None):
+    def search(self, query_string, max_results=100, sort_by=None):
         try:
             query_string = self.resolve_field_alias(query_string)
 
@@ -189,7 +189,6 @@ class F1SearchCLI:
         print("  Michael              - search 'Michael' in all fields")
         print("  Ferrari              - search 'Ferrari' in all fields")
         print("  1987                 - search birth year 1987")
-        print("                         (driver_name has 3x weight, teams_wiki has 2x weight)")
         print("\nSPECIFIC FIELD (with aliases):")
         print("  name:Michael         - name only")
         print("  teams:Ferrari        - teams only")
@@ -215,13 +214,6 @@ class F1SearchCLI:
         print("  help                 - show help")
         print("  exit                 - quit")
         print("  sort:wins [query]    - sort by wins")
-        print("\nAVAILABLE ALIASES:")
-        for alias, real_field in self.field_aliases.items():
-            print(f"  {alias:20} -> {real_field}")
-        print(f"\nNUMERIC FIELDS: {', '.join(self.numeric_fields)}")
-        print("\nFIELD WEIGHTS (boosting):")
-        for field, weight in self.field_weights.items():
-            print(f"  {field:20} -> {weight}")
         print("=" * 100)
 
     def close(self):
@@ -262,7 +254,7 @@ def main():
                     print("ERROR: Usage: sort:wins Hamilton")
                     continue
 
-            searcher.search(query_input, max_results=20, sort_by=sort_by)
+            searcher.search(query_input, max_results=100, sort_by=sort_by)
 
         except KeyboardInterrupt:
             print("\n\nGoodbye!")
