@@ -6,159 +6,193 @@ import re
 from java.nio.file import Paths
 from org.apache.lucene.store import MMapDirectory
 from org.apache.lucene.index import DirectoryReader
-from org.apache.lucene.search import IndexSearcher, Sort, SortField, BooleanQuery, BooleanClause, BoostQuery
-from org.apache.lucene.queryparser.classic import QueryParser
-from org.apache.lucene.analysis.standard import StandardAnalyzer
-from org.apache.lucene.analysis.core import WhitespaceAnalyzer
-from org.apache.lucene.analysis.miscellaneous import PerFieldAnalyzerWrapper
-from org.apache.lucene.document import IntPoint
-from java.util import HashMap
+from org.apache.lucene. search import IndexSearcher, BooleanQuery, BooleanClause, BoostQuery, Sort, SortField, FuzzyQuery
+from org. apache.lucene.queryparser.classic import QueryParser
+from org.apache.lucene.analysis. standard import StandardAnalyzer
+from org.apache.lucene. document import IntPoint
+from org.apache.lucene.index import Term
 
 INDEX_DIR = "index"
 
 
-class F1SearchCLI:
+class F1Search:
     def __init__(self):
         index_dir = MMapDirectory(Paths.get(INDEX_DIR))
         self.reader = DirectoryReader.open(index_dir)
         self.searcher = IndexSearcher(self.reader)
+        self.analyzer = StandardAnalyzer()
 
-        standard_analyzer = StandardAnalyzer()
-
-        whitespace_analyzer = WhitespaceAnalyzer()
-
-        analyzer_map = HashMap()
-        analyzer_map.put("birth_date_wiki", whitespace_analyzer)
-        analyzer_map.put("birth_date", whitespace_analyzer)
-
-        self.analyzer = PerFieldAnalyzerWrapper(standard_analyzer, analyzer_map)
-
-        self.text_fields = [
-            "driver_name",
-            "nationality_wiki",
-            "teams_wiki",
-            "former_teams_wiki",
-            "birth_place_wiki",
-            "car_number_wiki",
-            "birth_date_wiki",
-            "birth_date",
-        ]
-
-        self.field_weights = {
-            "driver_name": 3.0,
-            "teams_wiki": 2.0,
+        self.search_fields = {
+            "driver_name": 5.0,
+            "teams_wiki": 2.5,
+            "biography": 0.2,
+            "nationality_wiki":  5.0,
+            "birth_place_wiki": 5.0,
+            "birth_date_wiki": 1.5,
+            "birth_date":  1.5,
+            "car_number_wiki": 1.5,
+            "wins_text": 3.0,
+            "podiums_text": 3.0,
+            "poles_text": 3.0,
+            "starts_text": 3.0,
+            "fastest_laps_text": 3.0,
+            "championships_text": 3.0,
         }
 
-        self.field_aliases = {
-            "name": "driver_name",
-            "nationality": "nationality_wiki",
-            "teams": "teams_wiki",
-            "former_teams": "former_teams_wiki",
-            "birth_place": "birth_place_wiki",
-            "car_number": "car_number_wiki",
-            "birth_date": "birth_date_wiki",
-        }
+        self.numeric_fields = ["wins", "podiums", "poles", "starts", "fastest_laps", "championships"]
 
-        self.numeric_fields = ["wins", "podiums", "starts", "poles", "fastest_laps"]
+        self.fuzzy_mode = True
 
-    def resolve_field_alias(self, query_string):
-        for alias, real_field in self.field_aliases.items():
-            # Look for pattern: alias:value
-            pattern = rf'\b{alias}:'
-            if re.search(pattern, query_string):
-                query_string = re.sub(pattern, f'{real_field}:', query_string)
+    def parse_operator_queries(self, query_string):
+        numeric_filters = []
+        remaining = query_string
 
-        return query_string
+        for field in self.numeric_fields:
+            match = re.search(rf'\b{field}\s*>=\s*(\d+)\b', remaining, re.IGNORECASE)
+            if match:
+                value = int(match.group(1))
+                numeric_filters.append((field, value, 999999))
+                remaining = re.sub(rf'\b{field}\s*>=\s*\d+\b', '', remaining, flags=re.IGNORECASE)
+                continue
 
-    def parse_numeric_query(self, query_string):
-        match = re.match(r'(\w+):\[(\d+)\s+TO\s+(\d+|\*)\]', query_string, re.IGNORECASE)
-        if match:
-            field, min_val, max_val = match.groups()
-            min_val = int(min_val)
-            max_val = 999999 if max_val == '*' else int(max_val)
-            return field, min_val, max_val
+            match = re.search(rf'\b{field}\s*>\s*(\d+)\b', remaining, re.IGNORECASE)
+            if match:
+                value = int(match.group(1))
+                numeric_filters. append((field, value + 1, 999999))
+                remaining = re.sub(rf'\b{field}\s*>\s*\d+\b', '', remaining, flags=re. IGNORECASE)
+                continue
 
-        match = re.match(r'(\w+):\[(\d+)-(\d+|\*)\]', query_string)
-        if match:
-            field, min_val, max_val = match.groups()
-            min_val = int(min_val)
-            max_val = 999999 if max_val == '*' else int(max_val)
-            return field, min_val, max_val
+            match = re.search(rf'\b{field}\s*<=\s*(\d+)\b', remaining, re.IGNORECASE)
+            if match:
+                value = int(match.group(1))
+                numeric_filters.append((field, 0, value))
+                remaining = re.sub(rf'\b{field}\s*<=\s*\d+\b', '', remaining, flags=re.IGNORECASE)
+                continue
 
-        match = re.match(r'(\w+):\[(\d+)\s+TO\s+\*\]', query_string, re.IGNORECASE)
-        if match:
-            field, min_val = match.groups()
-            return field, int(min_val), 999999
+            match = re.search(rf'\b{field}\s*<\s*(\d+)\b', remaining, re.IGNORECASE)
+            if match:
+                value = int(match.group(1))
+                numeric_filters.append((field, 0, value - 1))
+                remaining = re.sub(rf'\b{field}\s*<\s*\d+\b', '', remaining, flags=re.IGNORECASE)
+                continue
 
-        match = re.match(r'(\w+):\[(\d+)-\*\]', query_string)
-        if match:
-            field, min_val = match.groups()
-            return field, int(min_val), 999999
+            match = re.search(rf'\b{field}\s*==\s*(\d+)\b', remaining, re.IGNORECASE)
+            if match:
+                value = int(match.group(1))
+                numeric_filters. append((field, value, value))
+                remaining = re.sub(rf'\b{field}\s*==\s*\d+\b', '', remaining, flags=re.IGNORECASE)
+                continue
 
-        return None
+            match = re.search(rf'\b{field}\s*=\s*(\d+)\b', remaining, re.IGNORECASE)
+            if match:
+                value = int(match.group(1))
+                numeric_filters.append((field, value, value))
+                remaining = re.sub(rf'\b{field}\s*=\s*\d+\b', '', remaining, flags=re.IGNORECASE)
+                continue
 
-    def search(self, query_string, max_results=100, sort_by=None):
+        remaining = re.sub(r'\s+', ' ', remaining).strip()
+
+        return numeric_filters, remaining
+
+    def create_fuzzy_query(self, word, field, boost):
+        max_edits = 1 if len(word) < 5 else 2
+
+        term = Term(field, word. lower())
+        fuzzy_query = FuzzyQuery(term, max_edits)
+
+        return BoostQuery(fuzzy_query, boost)
+
+    def search(self, query_string, max_results=5, use_or=True, sort_by=None):
         try:
-            query_string = self.resolve_field_alias(query_string)
-
-            numeric_result = self.parse_numeric_query(query_string)
-
-            if numeric_result:
-                field, min_val, max_val = numeric_result
-
-                if field not in self.numeric_fields:
-                    print(f"\nERROR: '{field}' is not a numeric field!")
-                    print(f"Available: {', '.join(self.numeric_fields)}")
-                    return
-
-                query = IntPoint.newRangeQuery(field, min_val, max_val)
-
-            elif ":" in query_string:
-                parser = QueryParser("driver_name", self.analyzer)
-                parser.setAllowLeadingWildcard(True)
-                query = parser.parse(query_string)
-
+            print(f"\nSearching for:  '{query_string}'")
+            if self.fuzzy_mode:
+                print("   Fuzzy mode:  ON (tolerates typos)")
             else:
-                builder = BooleanQuery.Builder()
+                print("   Fuzzy mode: OFF (exact matching)")
 
-                for field in self.text_fields:
-                    parser = QueryParser(field, self.analyzer)
-                    parser.setAllowLeadingWildcard(True)
-                    try:
-                        field_query = parser.parse(query_string)
+            numeric_filters, text_to_search = self.parse_operator_queries(query_string)
 
-                        weight = self.field_weights.get(field, 1.0)
-                        boosted_query = BoostQuery(field_query, weight)
+            query_parts = []
 
-                        builder.add(boosted_query, BooleanClause.Occur.SHOULD)
-                    except:
-                        pass
+            if numeric_filters:
+                for field, min_val, max_val in numeric_filters:
+                    if min_val == max_val:
+                        print(f"   Numeric filter: {field} == {min_val}")
+                    else:
+                        print(f"   Numeric filter: {field} in [{min_val}, {max_val}]")
 
-                query = builder.build()
+                    numeric_query = IntPoint. newRangeQuery(field, min_val, max_val)
+                    query_parts.append(numeric_query)
 
-            if sort_by:
+            text_to_search = text_to_search.strip()
+            if text_to_search and text_to_search not in ["driver", "drivers", "racer", "racers", "with"]:
+                print(f"   Text search: '{text_to_search}'")
+                print(f"   Mode: {'OR' if use_or else 'AND'}")
+
+                words = text_to_search.split()
+                main_builder = BooleanQuery.Builder()
+
+                for word in words:
+                    if word.lower() in ["driver", "drivers", "racer", "racers", "with", "has", "have", "and", "the"]:
+                        continue
+
+                    word_builder = BooleanQuery.Builder()
+
+                    for field, boost in self.search_fields.items():
+                        try:
+                            if self. fuzzy_mode:
+                                boosted_query = self.create_fuzzy_query(word, field, boost)
+                            else:
+                                parser = QueryParser(field, self.analyzer)
+                                parser.setAllowLeadingWildcard(True)
+                                field_query = parser. parse(word)
+                                boosted_query = BoostQuery(field_query, boost)
+
+                            word_builder.add(boosted_query, BooleanClause.Occur.SHOULD)
+                        except:
+                            pass
+
+                    word_query = word_builder.build()
+                    occur = BooleanClause. Occur.SHOULD if use_or else BooleanClause. Occur.MUST
+                    main_builder.add(word_query, occur)
+
+                text_query = main_builder.build()
+                query_parts.append(text_query)
+
+            if len(query_parts) == 0:
+                print("ERROR: No valid query")
+                return
+            elif len(query_parts) == 1:
+                query = query_parts[0]
+            else:
+                combined_builder = BooleanQuery.Builder()
+                for q in query_parts:
+                    combined_builder.add(q, BooleanClause. Occur.MUST)
+                query = combined_builder.build()
+
+            if sort_by and sort_by in self.numeric_fields:
+                print(f"   Sorting by:  {sort_by} (descending)")
                 sort = Sort(SortField(sort_by, SortField.Type.INT, True))
                 hits = self.searcher.search(query, max_results, sort)
             else:
                 hits = self.searcher.search(query, max_results)
 
-            total = hits.totalHits.value()
-            print(f"\nFound {total} results for query: '{query_string}'")
+            total = hits.totalHits. value()
+            print(f"\nFound {total} results\n")
+            print("=" * 120)
 
             if total == 0:
-                print("\nNo results.    Try:")
-                print("  - Michael")
-                print("  - Ferrari")
-                print("  - wins:[10-100]")
-                print("  - teams:Mercedes")
-                print("  - 1987")
+                if not self. fuzzy_mode:
+                    print("\nTry:")
+                    print("   - Enable fuzzy mode:  'fuzzy on'")
+                    print("   - Check spelling")
+                else:
+                    print("\nNo results even with fuzzy matching")
                 return
 
-            print("=" * 100)
-
-            stored_fields = self.reader.storedFields()
+            stored_fields = self.reader. storedFields()
             for i, score_doc in enumerate(hits.scoreDocs, 1):
-                doc = stored_fields.document(score_doc.doc)
+                doc = stored_fields. document(score_doc.doc)
                 self.show_result(doc, score_doc.score, i)
 
         except Exception as e:
@@ -168,70 +202,73 @@ class F1SearchCLI:
 
     def show_result(self, doc, score, rank):
         print(f"\n{rank}.  Score: {score:.4f}")
-        print(f"   Name: {doc.get('driver_name')}")
-        print(f"   Birth: {doc.get('birth_date_wiki') or doc.get('birth_date') or 'unknown'}")
-        print(f"   Place: {doc.get('birth_place_wiki') or 'unknown'}")
-        print(f"   Nationality: {doc.get('nationality_wiki') or 'unknown'}")
-        print(f"   Teams: {doc.get('teams_wiki') or doc.get('former_teams_wiki') or 'none'}")
-        print(f"   Car number: {doc.get('car_number_wiki') or 'none'}")
-        print(
-            f"   Wins: {doc.get('wins') or '0'} | Podiums: {doc.get('podiums') or '0'}")
-        print(f"   Pole positions: {doc.get('poles') or '0'} | Fastest laps: {doc.get('fastest_laps') or '0'}")
-        print(f"   Championships: {doc.get('championships_wiki') or '0'}")
-        print("-" * 100)
+        print(f"   Name: {doc.get('driver_name') or 'Unknown'}")
+
+        birth = doc.get('birth_date_wiki') or doc.get('birth_date') or 'unknown'
+        place = doc.get('birth_place_wiki') or 'unknown'
+        nationality = doc.get('nationality_wiki') or 'unknown'
+
+        print(f"   Birth:  {birth} | {place}")
+        print(f"   Nationality: {nationality}")
+
+        teams = doc.get('teams_wiki') or doc.get('former_teams_wiki') or 'none'
+        if len(teams) > 100:
+            teams = teams[:100] + "..."
+        print(f"   Teams: {teams}")
+
+        wins = doc. get('wins') or '0'
+        podiums = doc.get('podiums') or '0'
+        championships = doc.get('championships') or '0'
+        starts = doc.get('starts') or '0'
+        poles = doc.get('poles') or '0'
+
+        print(f"   Wins: {wins} | Podiums: {podiums} | Championships: {championships}")
+        print(f"   Starts:  {starts} | Poles: {poles}")
 
     def show_help(self):
-        """Help"""
-        print("\n" + "=" * 100)
-        print("F1 FULL-TEXT SEARCH ENGINE")
-        print("=" * 100)
-        print("\nBASIC SEARCH (multi-field with boosting):")
-        print("  Michael              - search 'Michael' in all fields")
-        print("  Ferrari              - search 'Ferrari' in all fields")
-        print("  1987                 - search birth year 1987")
-        print("\nSPECIFIC FIELD (with aliases):")
-        print("  name:Michael         - name only")
-        print("  teams:Ferrari        - teams only")
-        print("  nationality:British  - nationality only")
-        print("  car_number:44        - car number only")
-        print("  birth_place:Germany  - birth place only")
-        print("  birth_date:1987      - birth year 1987")
-        print("\nNUMERIC RANGES:")
-        print("  wins:[10-100]        - 10-100 wins")
-        print("  wins:[50-*]          - 50+ wins")
-        print("  podiums:[20-50]      - 20-50 podiums")
-        print("  starts:[100-*]       - 100+ starts")
-        print("  fastest_laps:[10-*]  - 10+ fastest laps")
-        print("\nCOMBINED QUERIES:")
-        print("  name:Hamilton AND nationality:British")
-        print("  teams:Ferrari AND wins:[10-*]")
-        print("  birth_date:1987 AND nationality:German")
-        print("\nWILDCARDS:")
-        print("  Schum*               - starts with 'Schum'")
-        print("  *son                 - ends with 'son'")
-        print("  teams:*Mercedes*     - contains 'Mercedes'")
+        print("\n" + "=" * 120)
+        print("F1 INTELLIGENT SEARCH")
+        print("=" * 120)
+        print("\nTEXT SEARCH:")
+        print("   Michael Schumacher")
+        print("   Ferrari champion")
+        print("   21 wins")
+        print("\nOPERATOR-BASED NUMERIC QUERIES:")
+        print("   wins>8")
+        print("   championships>=5")
+        print("   Ferrari wins>20")
+        print("\nFUZZY SEARCH (typo tolerance, DEFAULT ON):")
+        print("   fuzzy on          - enable fuzzy mode")
+        print("   fuzzy off         - disable fuzzy mode")
+        print("   Shumacher         - finds 'Schumacher' (with fuzzy on)")
+        print("   Ferari            - finds 'Ferrari' (with fuzzy on)")
         print("\nCOMMANDS:")
-        print("  help                 - show help")
-        print("  exit                 - quit")
-        print("  sort:wins [query]    - sort by wins")
-        print("=" * 100)
+        print("   help / exit / and / or")
+        print("   fuzzy on / fuzzy off")
+        print("   sort: wins [query]")
+        print("=" * 120)
 
     def close(self):
         self.reader.close()
 
 
 def main():
-    searcher = F1SearchCLI()
+    searcher = F1Search()
+    use_or = True
 
-    print("\n" + "=" * 100)
-    print("F1 FULL-TEXT SEARCH ENGINE - LUCENE (with Field Boosting)")
-    print("=" * 100)
-    print("\nExamples: 'Ferrari', 'wins:[10-100]', 'teams:Mercedes', '1987'")
-    print("Type 'help' for help or 'exit' to quit\n")
+    print("\n" + "=" * 120)
+    print("F1 INTELLIGENT SEARCH - Text + Numeric + Fuzzy (DEFAULT ON)")
+    print("=" * 120)
+    print("\nTry:  'wins>8', 'Ferrari', '21 wins', 'Shumacher' (fuzzy ON by default)")
+    print("Type 'help' or 'exit'\n")
 
     while True:
         try:
-            query_input = input("Query: ").strip()
+            mode_str = f"{'OR' if use_or else 'AND'}"
+            if searcher.fuzzy_mode:
+                mode_str += " | FUZZY"
+
+            query_input = input(f"Query ({mode_str}): ").strip()
 
             if not query_input:
                 continue
@@ -244,17 +281,34 @@ def main():
                 searcher.show_help()
                 continue
 
+            if query_input.lower() == "and":
+                use_or = False
+                print("AND mode")
+                continue
+
+            if query_input. lower() == "or":
+                use_or = True
+                print("OR mode")
+                continue
+
+            if query_input. lower() in ["fuzzy on", "fuzzy"]:
+                searcher.fuzzy_mode = True
+                print("Fuzzy mode ON (tolerates typos)")
+                continue
+
+            if query_input.lower() in ["fuzzy off", "exact"]:
+                searcher.fuzzy_mode = False
+                print("Fuzzy mode OFF (exact matching)")
+                continue
+
             sort_by = None
             if query_input.startswith("sort:"):
                 parts = query_input.split(" ", 1)
                 if len(parts) == 2:
                     sort_by = parts[0].replace("sort:", "")
                     query_input = parts[1]
-                else:
-                    print("ERROR: Usage: sort:wins Hamilton")
-                    continue
 
-            searcher.search(query_input, max_results=100, sort_by=sort_by)
+            searcher.search(query_input, max_results=5, use_or=use_or, sort_by=sort_by)
 
         except KeyboardInterrupt:
             print("\n\nGoodbye!")

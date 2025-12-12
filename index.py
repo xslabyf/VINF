@@ -268,5 +268,5 @@ def build_index(folder_path, queries):
 
 if __name__ == "__main__":
     folder = "data/html"
-    queries = ["Ferrari", "Mercedes", "British", "1987"]
+    queries = ["Ferrari driver named Peter", "Jaguar driver who is Belgian", "British driver", "1987"]
     build_index(folder, queries)
